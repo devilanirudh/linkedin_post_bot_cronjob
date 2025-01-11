@@ -12,7 +12,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import time
 import logging
-from imagine_art import generate_image
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('apscheduler').setLevel(logging.DEBUG)
 
@@ -21,6 +20,7 @@ load_dotenv()
 
 
 genai_api_key = os.getenv("GENAI_API_KEY")
+stability_api_key = os.getenv("STABILITY_API_KEY")
 linkedin_access_token = os.getenv("LINKEDIN_ACCESS_TOKEN")
 linkedin_profile_id = os.getenv("LINKEDIN_PROFILE_ID")
 
@@ -104,14 +104,61 @@ def select_and_process_article(website_html: str, prompt: str) -> str:
 # Summarize article
 def generate_summary(article_content: str) -> str:
     summary_prompt = f"""
-    Based on the following article about effective prompt crafting, generate a single, highly detailed 
-    image prompt for an AI text-to-image generator that incorporates specific, contextual, and visually 
-    descriptive language. Ensure the prompt describes a unique and vivid scene:
+    Summarize the following article for a ai text to image genrator for image prompt:
     
     {article_content}
     """
     response = model.generate_content(summary_prompt)
     return response.text.strip()
+
+
+def generate_image(summary_text: str, save_to_file: bool = False, file_name: str = "./generated_image.webp") -> str:
+    """
+    Generate an image based on the given summary text using Stability AI's API.
+
+    Args:
+        summary_text (str): The text prompt for the image generation.
+        save_to_file (bool): Whether to save the generated image to a local file. Default is False.
+        file_name (str): The name of the file to save the image if save_to_file is True. Default is "generated_image.webp".
+
+    Returns:
+        str: The file path of the generated image or raises an exception if failed.
+    """
+    try:
+        # Define the API endpoint and headers
+        url = "https://api.stability.ai/v2beta/stable-image/generate/ultra"
+        headers = {
+            "authorization": f"Bearer {stability_api_key}",
+            "accept": "image/*"
+        }
+
+        # Define the payload
+        data = {
+            "prompt": summary_text,
+            "output_format": "webp",
+        }
+
+        # Make the POST request
+        response = requests.post(
+            url,
+            headers=headers,
+            files={"none": ''},  # Stability AI requires this field
+            data=data,
+        )
+
+        # Check response status
+        if response.status_code == 200:
+            file_name = file_name
+            with open(file_name, 'wb') as file:
+                file.write(response.content)
+                return file_name
+
+        # Handle errors
+        else:
+            raise Exception(f"Error: {response.status_code}, Details: {response.json()}")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating image: {str(e)}")
 
 
 # Get the access token
@@ -224,7 +271,7 @@ def scheduled_task():
         article_content = select_and_process_article(website_html, prompt)
         summary = generate_summary(article_content)
         image_prompt = f"An illustration related to {summary}."
-        image_path = generate_image(image_prompt, style="flux-dev", aspect_ratio="16:9")
+        image_path = generate_image(image_prompt)
         access_token = linkedin_access_token
         post_to_linkedin(access_token, article_content, image_path)
     except Exception as e:
@@ -235,7 +282,7 @@ scheduler = BackgroundScheduler()
 
 scheduler.add_job(
     scheduled_task,
-    CronTrigger(hour=9, minute=30),  # Adjust time as needed
+    CronTrigger(hour=15, minute=0),  # Adjust time as needed
     id="daily_linkedin_post",
     replace_existing=True,
 )
@@ -257,7 +304,7 @@ async def generate_post(request: PostRequest):
         article_content = select_and_process_article(website_html, request.prompt)
         summary = generate_summary(article_content)
         image_prompt = f"An illustration related to {summary}."
-        image_path = generate_image(image_prompt, style="flux-dev", aspect_ratio="16:9")
+        image_path = generate_image(image_prompt)
         access_token = linkedin_access_token
         linkedin_response = post_to_linkedin(access_token, article_content, image_path)
         return {
